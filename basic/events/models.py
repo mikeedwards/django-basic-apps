@@ -58,5 +58,5 @@ class EventTime(models.Model):
             'month': self.start.strftime('%b').lower(),
             'day': self.start.day,
             'slug': self.event.slug,
-            'event_id': self.event.id
+            'id': self.id
         })

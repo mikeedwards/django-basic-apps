@@ -56,6 +56,10 @@ class Post(models.Model):
         db_table  = 'blog_posts'
         ordering  = ('-publish',)
         get_latest_by = 'publish'
+        permissions = (
+            ("change_author", "Can change author"),
+            ("change_own_post", "Can change own post"),
+        )
 
     def __unicode__(self):
         return u'%s' % self.title

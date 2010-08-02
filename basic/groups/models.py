@@ -2,14 +2,17 @@ from django.db import models
 from django.db.models import permalink
 from django.contrib.auth.models import User
 
-from basic.groups.managers import *
+from basic.tools.shortcuts import get_image_path
 
 
-def get_group_icon_path(instance, filename):
-    import os.path, hashlib
-    name = hashlib.md5("%s_%s" % ("group", instance.id)).hexdigest()
-    ext = os.path.splitext(filename)
-    return os.path.join('groups', '%s%s' % (name, ext[1]))
+GROUP_OWNER = 0
+GROUP_MODERATOR = 1
+GROUP_MEMBER = 2
+GROUP_MEMBER_CHOICES = (
+    (GROUP_OWNER, 'Owner'),
+    (GROUP_MODERATOR, 'Moderator'),
+    (GROUP_MEMBER, 'Member')
+)
 
 
 class Group(models.Model):
@@ -18,30 +21,25 @@ class Group(models.Model):
     slug = models.SlugField(unique=True, help_text="Used for the Group URL: http://example.com/groups/the-club/")
     tease = models.TextField(blank=True, help_text="Brief explaination of what this group is. Shows up when the group is listed amoung other groups.")
     creator = models.ForeignKey(User, related_name='created_groups', help_text="Serves as a record as who the original creator was in case ownership is transfered.")
-    icon = models.FileField(upload_to=get_group_icon_path, blank=True, help_text="Needs to be larger than 120x120 pixels.")
+    icon = models.FileField(upload_to=get_image_path, blank=True, help_text="Needs to be larger than 120x120 pixels.")
     invite_only = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     created = models.DateTimeField(auto_now_add=True)
     modified = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        verbose_name = 'group'
-        verbose_name_plural = 'groups'
-        db_table = 'groups'
 
     def __unicode__(self):
         return self.title
 
     @permalink
     def get_absolute_url(self):
-        return ('group', None, {'slug': self.slug})
+        return ('groups:group', None, {'slug': self.slug})
 
     def owners(self):
         return self.members.filter(status=0)
 
     def moderators(self):
         return self.members.filter(status=1)
-    
+
     def is_member(self, user):
         try:
             member = self.members.get(user=user)
@@ -52,24 +50,22 @@ class Group(models.Model):
 
 class GroupPage(models.Model):
     """ GroupPage model """
-    group = models.ForeignKey(Group, related_name='group_texts')
+    group = models.ForeignKey(Group, related_name='pages')
     title = models.CharField(blank=True, max_length=100)
-    slug = models.SlugField()
+    slug = models.SlugField(help_text='Used for the page URL.')
     body = models.TextField(blank=True)
     created = models.DateTimeField(auto_now_add=True)
     modified = models.DateTimeField(auto_now=True)
 
-    class Meta:
-        verbose_name = 'group page'
-        verbose_name_plural = 'group pages'
-        db_table = 'group_pages'
-
     def __unicode__(self):
         return self.title
 
+    class Meta:
+        unique_together = (('slug', 'group'),)
+
     @permalink
     def get_absolute_url(self):
-        return ('group_page', None, {
+        return ('groups:page', None, {
             'slug': self.group.slug,
             'page_slug': self.slug
         })
@@ -86,9 +82,6 @@ class GroupTopic(models.Model):
     modified = models.DateTimeField(auto_now=True)
 
     class Meta:
-        verbose_name = 'group topic'
-        verbose_name_plural = 'group topics'
-        db_table = 'group_topics'
         ordering = ('-id',)
 
     def __unicode__(self):
@@ -96,10 +89,22 @@ class GroupTopic(models.Model):
 
     @permalink
     def get_absolute_url(self):
-        return ('group_topic', None, {
-            'slug': self.group.slug,
-            'topic_id': self.pk
-        })
+        return ('groups:topic', [self.group.slug, self.pk])
+
+    @permalink
+    def get_edit_url(self):
+        return ('groups:topic_edit', [self.group.slug, self.pk])
+
+    @permalink
+    def get_remove_url(self):
+        return ('groups:topic_remove', [self.group.slug, self.pk])
+
+
+class GroupMessageManager(models.Manager):
+    """Returns messages that are flagged as active."""
+
+    def get_query_set(self):
+        return super(GroupMessageManager, self).get_query_set().filter(is_active=True)
 
 
 class GroupMessage(models.Model):
@@ -112,37 +117,60 @@ class GroupMessage(models.Model):
     created = models.DateTimeField(auto_now_add=True)
     modified = models.DateTimeField(auto_now=True)
 
-    class Meta:
-        verbose_name = 'group message'
-        verbose_name_plural = 'group messages'
-        db_table = 'group_messages'
-
     def __unicode__(self):
         return self.message
 
     @permalink
     def get_absolute_url(self):
-        return ('group_topic_message', None, {
-            'slug': self.topic.group.slug,
-            'topic_id': self.topic.pk,
-            'message_id': self.pk
-        })
+        return ('groups:message',
+            [self.topic.group.slug, self.topic.pk, self.pk])
+
+    @permalink
+    def get_edit_url(self):
+        return ('groups:message_edit',
+            [self.topic.group.slug, self.topic.pk, self.pk])
+
+    @permalink
+    def get_remove_url(self):
+        return ('groups:message_remove',
+            [self.topic.group.slug, self.topic.pk, self.pk])
+
+
+class GroupMemberManager(models.Manager):
+    """Returns memebers that belong to a group"""
+    def is_member(self, group, user):
+        if user.is_anonymous():
+            return False
+        if self.filter(group=group, user=user).count() > 0:
+            return True
+        return False
+
+    def is_owner(self, group, user):
+        if user.is_anonymous():
+            return False
+        if self.filter(group=group, user=user, status=GROUP_OWNER).count() > 0:
+            return True
+        return False
+
+    def is_moderator(self, group, user):
+        if user.is_anonymous():
+            return False
+        if self.filter(group=group, user=user, status__in=(GROUP_MODERATOR, GROUP_OWNER)).count() > 0:
+            return True
+        return False
 
 
 class GroupMember(models.Model):
     """ GroupMember model """
     user = models.ForeignKey(User, related_name='group_memberships')
     group = models.ForeignKey(Group, related_name='members')
-    status = models.PositiveSmallIntegerField(choices=((0, 'Owner'),(1, 'Moderator'),(2, 'Member')), default=2)
+    status = models.PositiveSmallIntegerField(choices=GROUP_MEMBER_CHOICES, default=GROUP_MEMBER)
     created = models.DateTimeField(auto_now_add=True)
     modified = models.DateTimeField(auto_now=True)
     objects = GroupMemberManager()
 
     class Meta:
-        verbose_name = 'group member'
-        verbose_name_plural = 'group members'
-        db_table = 'group_members'
         unique_together = (('user', 'group'),)
 
     def __unicode__(self):
-        return '%s' % self.user
+        return self.user.username
